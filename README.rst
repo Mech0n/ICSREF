@@ -2,6 +2,8 @@
 ICSREF: ICS Reverse Engineering Framework
 *****************************************
 
+> Now it can run in Python 3.8.
+
 Overview
 ========
 

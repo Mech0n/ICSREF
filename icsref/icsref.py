@@ -22,6 +22,10 @@ class icsrefPrompt(Cmd):
     def __init__(self):
         Cmd.__init__(self, use_ipython=True)
 
+        # DEBUG
+        self.debug = True
+
+
     def do_load(self, filename):
         """
         Load saved analyzed object from .dat file
@@ -67,6 +71,7 @@ class icsrefPrompt(Cmd):
         """
         if len(filename) == 0 or not os.path.isfile(filename):
             print('Please provide path to a *.PRG file')
+            print(filename)
         elif filename[-4:].upper() != '.PRG':
             print('You must provide a .PRG file')
         else:
@@ -91,7 +96,7 @@ class icsrefPrompt(Cmd):
 
         """
         if not filename:
-            outfile = '{}.dat'.format(self.prg.name + "_analysis")
+            outfile = '{}.dat'.format(self.prg.name + "_analysis")  # type: ignore
         else:
             outfile = filename + '.dat'
         dat_f = os.path.join('results', self.prg.name, outfile)

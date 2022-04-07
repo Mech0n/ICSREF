@@ -6,11 +6,13 @@ __author__ = 'Tasos Keliris'
 # Imports
 import sys
 import os
+import traceback
 import r2pipe
 import angr
 import re
 import operator
 import hashlib
+from sympy import EX
 import ujson
 import dill
 import struct
@@ -122,23 +124,45 @@ class Program():
 
         # Read data from TRG file
         with open(trg_file, 'r') as f:
+            # print(f'I/O func: {trg_file}')
             trg_data = f.readlines()
         # Search for hex
         hex_pattern = re.compile('([0-9a-fA-F])*')
         # Find input_start, output_start, input_size, output_size
+        input_start = 0
+        input_size = 0
+        output_start = 0
+        output_size = 0
+
         for line in trg_data:
             if 'BaseAddressOfInputSegment' in line:
-                input_start = re.search(hex_pattern, line.split('=')[1].replace('16#','')).group(0)
-                input_start = int(input_start, 16)
+                input_start = re.search(hex_pattern, line.split('=')[1].replace('16#',''))
+                if input_start != None:
+                    input_start = input_start.group(0)
+                    input_start = int(input_start, 16)
+                else:
+                    input_start = 0
             if 'BaseAddressOfOutputSegment' in line:
-                output_start = re.search(hex_pattern, line.split('=')[1].replace('16#','')).group(0)
-                output_start = int(output_start, 16)
+                output_start = re.search(hex_pattern, line.split('=')[1].replace('16#',''))
+                if output_start != None:
+                    output_start = output_start.group(0)
+                    output_start = int(output_start, 16)
+                else:
+                    output_start = 0
             if 'SizeOfInputSegment' in line:
-                input_size = re.search(hex_pattern, line.split('=')[1].replace('16#','')).group(0)
-                input_size = int(input_size, 16)
+                input_size = re.search(hex_pattern, line.split('=')[1].replace('16#',''))
+                if input_size != None:
+                    input_size = input_size.group(0)
+                    input_size = int(input_size, 16)
+                else:
+                    input_size = 0
             if 'SizeOfOutputSegment' in line:
-                output_size = re.search(hex_pattern, line.split('=')[1].replace('16#','')).group(0)
-                output_size = int(output_size, 16)
+                output_size = re.search(hex_pattern, line.split('=')[1].replace('16#',''))
+                if output_size != None:
+                    output_size = output_size.group(0)
+                    output_size = int(output_size, 16)
+                else:
+                    output_size = 0
 
         # Find inputs/outputs offsets in the code
         self.inputs = {}
@@ -153,7 +177,7 @@ class Program():
                 self.outputs[hex(i)]=[hex(k) for k in match]
         return 0
 
-    def __find_blocks(self):
+    def __find_blocks(self) -> list:
         """
         Finds binary blobs (routines) based on the following delimiters:
          
@@ -163,83 +187,107 @@ class Program():
 
         """
 
-        # Matches the prologue
-        prologue = '\x0d\xc0\xa0\xe1\x00\x58\x2d\xe9\x0c\xb0\xa0\xe1'
-        beginnings = self.__allindices(self.hexdump, prologue)
-        # Matches the epilogue
-        epilogue = '\x00\xa8\x1b\xe9'
-        endings = self.__allindices(self.hexdump, epilogue)
-        endings = [i+4 for i in endings]
+        try: 
+            # Matches the prologue
+            prologue = b'\x0d\xc0\xa0\xe1\x00\x58\x2d\xe9\x0c\xb0\xa0\xe1'
+            beginnings = self.__allindices(self.hexdump, prologue)
+            # Matches the epilogue
+            epilogue = b'\x00\xa8\x1b\xe9'
+            endings = self.__allindices(self.hexdump, epilogue)
+            endings = [i+4 for i in endings]
 
-        return zip(beginnings, endings)
+            return list(zip(beginnings, endings))
+
+        except Exception as e:
+            print(f'find_block: {e}')
+            return list()
 
     def __find_functions(self):
         """
         Produces disassembly listings for all functions
         """
-        # Open an r2pipe to radare2 \m/
-        r2=r2pipe.open(self.path)
-        # Set r2 architecture configuration - Processor specific
-        r2.cmd('e asm.arch=arm; e asm.bits=32; e cfg.bigendian=false')
-        # Instantiate Functions
-        for i in range(len(self.FunctionBoundaries)):
-            # Code disassembly
-            # Start: MOV, STMFD, MOV
-            start_code = self.FunctionBoundaries[i][0]
-            # Stop: LDMDB
-            stop_code = self.FunctionBoundaries[i][1]
-            length_code = stop_code - start_code
-            disasm_code = r2.cmd('b {}; pD @{}'.format(length_code ,start_code))
-            # Add spaces for formating purposes and consistency in disassembly string
-            disasm_code = (12 * ' ' + disasm_code).split('\n')
-            # Add data
-            # Start at code stop
-            start_data = stop_code
-            # Stop at beginning of next (or special case for last function from header)
-            if i == len(self.FunctionBoundaries)-1:
-                stop_data = self.program_end
-            else:
-                stop_data = self.FunctionBoundaries[i+1][0]
-            length_data = stop_data - start_data
-            # Data disassembly
-            disasm_data = r2.cmd('pxr {} @{}'.format(length_data ,start_data))
-            disasm_data = disasm_data.split('\n')
-            # Disassembly formating
-            for i,line in enumerate(disasm_data):
-                disasm_data[i] = '            {}     {}      {}'.format(line[:11], line[14:23], line [14:])
-            disasm = disasm_code + disasm_data
-            self.Functions.append(Function(self.path, start_code, stop_data, self.hexdump[start_code:stop_data], disasm))
-        r2.quit()
-        return 0
+        
+        try :
+            # Open an r2pipe to radare2 \m/
+            r2=r2pipe.open(self.path)
+            # Set r2 architecture configuration - Processor specific
+            r2.cmd('e asm.arch=arm; e asm.bits=32; e cfg.bigendian=false')
+            # Instantiate Functions
+            for i in range(len(self.FunctionBoundaries)):
+                # Code disassembly
+                # Start: MOV, STMFD, MOV
+                start_code = self.FunctionBoundaries[i][0]
+                # Stop: LDMDB
+                stop_code = self.FunctionBoundaries[i][1]
+                length_code = stop_code - start_code
+                disasm_code = r2.cmd('b {}; pD @{}'.format(length_code ,start_code))
+                # Add spaces for formating purposes and consistency in disassembly string
+                disasm_code = (12 * ' ' + disasm_code if disasm_code else '').split('\n')
+                # Add data
+                # Start at code stop
+                start_data = stop_code
+                # Stop at beginning of next (or special case for last function from header)
+                if i == len(self.FunctionBoundaries)-1:
+                    stop_data = self.program_end
+                else:
+                    stop_data = self.FunctionBoundaries[i+1][0]
+                length_data = stop_data - start_data
+                # Data disassembly
+                disasm_data = r2.cmd('pxr {} @{}'.format(length_data ,start_data))
+                if disasm_data != None:
+                    disasm_data = disasm_data.split('\n')
+                    # Disassembly formating
+                    for i,line in enumerate(disasm_data):
+                        disasm_data[i] = '            {}     {}      {}'.format(line[:11], line[14:23], line [14:])
+                    disasm = disasm_code + disasm_data
+                    self.Functions.append(Function(self.path, start_code, stop_data, self.hexdump[start_code:stop_data], disasm))
+            r2.quit()
+        except Exception as e:
+            print(f'__find_functions func: {e}')
+            traceback.print_exc(file=sys.stdout)
 
-    def __find_dynlibs(self):
+    def __find_dynlibs(self) -> dict:
         """
         Finds dynamic libraries and their offsets
         """
-        offset = self.dynlib_end
-        # Reverse find 0xFFFF (offset for the beginning of strings)
-        dynlib_offset = self.hexdump.rfind('\xff\xff',0,offset) + 2
-        dynlibs = {}
-        # Match printable ASCII characters
-        dynlib = re.search('[ -~]*', self.hexdump[dynlib_offset:]).group(0)
-        # Find the offsets to dynamic libs
-        while dynlib:
-            dynlib_offset += len(dynlib) + 1
-            temp = self.hexdump[dynlib_offset:dynlib_offset+2].encode('hex')
-            jump_offset = int(''.join([m[2:4]+m[0:2] for m in [temp[i:i+4] for i in range(0,len(temp),4)]]),16) * 4 + 8
-            dynlibs[jump_offset] = dynlib
-            dynlib_offset += 2
-            dynlib = re.search('[ -~]*', self.hexdump[dynlib_offset:]).group(0)
-        return dynlibs
+        try :
+            offset = self.dynlib_end
+            # Reverse find 0xFFFF (offset for the beginning of strings)
+            dynlib_offset = self.hexdump.rfind(b'\xff\xff',0,offset) + 2
+            dynlibs = {}
+            # Match printable ASCII characters
+            dynlib = re.search(rb'[ -~]*', self.hexdump[dynlib_offset:])
+            if dynlib != None :
+                dynlib = dynlib.group(0)
+            # Find the offsets to dynamic libs
+            from binascii import hexlify
+            while dynlib:
+                dynlib_offset += len(dynlib) + 1
+                
+                # DEBUG
+                # print(type(self.hexdump[dynlib_offset:dynlib_offset+2]), len(self.hexdump[dynlib_offset:dynlib_offset+2]), (self.hexdump[dynlib_offset:dynlib_offset+2]))
+
+                temp = hexlify(self.hexdump[dynlib_offset:dynlib_offset+2])
+                jump_offset = int(b''.join([m[2:4]+m[0:2] for m in [temp[i:i+4] for i in range(0,len(temp),4)]]),16) * 4 + 8
+                dynlibs[jump_offset] = dynlib
+                dynlib_offset += 2
+                dynlib = re.search(rb'[ -~]*', self.hexdump[dynlib_offset:])
+                if dynlib != None:
+                    dynlib = dynlib.group(0)
+            return dynlibs
+
+        except Exception as e:
+            print(f"__find_dynlibs func: {e}")
+            return dict()
 
     def __find_statlibs(self):
         entry_offset = self.Functions[-1].start
         stop_offset  = self.FunctionBoundaries[-1][1]-8
         funs = [x for x, _ in self.FunctionBoundaries]
         # Change 0x2000 location of writing address in OUTRO with 0x10000000 to not overwrite code
-        code_start = '\x00\x20\x00\x00'
-        with open('temphexdump.bin', 'w') as f:
-            hexdump_mod = self.hexdump.replace(code_start, '\x00\x00\x00\x10')
+        code_start = b'\x00\x20\x00\x00'
+        with open('temphexdump.bin', 'wb') as f:
+            hexdump_mod = self.hexdump.replace(code_start, b'\x00\x00\x00\x10')
             f.write(hexdump_mod)
         proj = angr.Project('temphexdump.bin', load_options={'main_opts': {'backend': 'blob', 'custom_base_addr': 0, 'custom_arch':'ARMEL', 'custom_entry_point':0x50}, 'auto_load_libs':False})
         state = proj.factory.entry_state()
@@ -247,17 +295,21 @@ class Program():
         simgr = proj.factory.simulation_manager(state)
         # Initialize some (0xFF) mem locations so taht execution doesn't jump to end.
         for i in range(0,0xFF,4):
-            simgr.active[0].mem[simgr.active[0].regs.r0 + i].long = 0xFFFFFFFF
+            simgr.active[0].mem[simgr.active[0].regs.r0 + i].long = 0xFFFFFFFF  # type: ignore
         # Run the code to create the static offsets in memory
         simgr.explore(find=stop_offset)
         statlibs = {}
         i = 0
         while len(statlibs) < len(funs) - 1:
-            mem_val = state.solver.eval(simgr.found[0].mem[simgr.found[0].regs.r1 + i].int.resolved)
+            mem_val = state.solver.eval(simgr.found[0].mem[simgr.found[0].regs.r1 + i].int.resolved)  # type: ignore
             if mem_val in funs:
                 statlibs[i + 8] = 'sub_{:x}'.format(mem_val)
             i += 4
         os.remove('temphexdump.bin')
+        
+        # DEBUG
+        # print(statlibs)
+
         return statlibs
 
     def __find_libcalls(self):
@@ -299,7 +351,7 @@ class Program():
         Serializes the object instance and saves it to a file using the dill module
         """
         # Create directory for output results
-        path = os.path.join('results', self.name)
+        path = os.path.join('results', self.name)  # type: ignore
         try: 
             os.makedirs(path)
         except OSError:
@@ -307,7 +359,7 @@ class Program():
                 raise
         dat_f = os.path.join(path, '{}_init_analysis.dat'.format(self.name))
         
-        with open(dat_f, 'w') as f:
+        with open(dat_f, 'wb') as f:
             dill.dump(self, f)
 
     def __allindices(self, file_bytes, sub, offset=0):
@@ -329,11 +381,15 @@ class Program():
         """
         Finds consecutive <= 4-byte ASCII character strings
         """
-        strings = {}
-        p=re.compile('([ -~]{4,})')
-        for m in p.finditer(self.hexdump):
-            strings[m.start()] = m.group()
-        return strings
+        try :
+            strings = {}
+            p=re.compile(rb'([ -~]{4,})')
+            for m in p.finditer(self.hexdump):
+                strings[m.start()] = m.group()
+            return strings
+        except Exception as e:
+            print(f'Failed in __srtrings: {e}')
+
 
 class Function():
     """
@@ -379,7 +435,7 @@ class Function():
             if len(op) < 6:
                 op_str += line[43:].split(' ')[0]
         # Function opcodes SHA256 hash
-        self.hash = hashlib.sha256(op_str).hexdigest()
+        self.hash = hashlib.sha256(op_str.encode()).hexdigest()
         # Initialize list of calls from function. Gets populated later
         self.calls = {}
 
